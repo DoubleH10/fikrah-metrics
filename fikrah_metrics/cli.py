@@ -1,4 +1,4 @@
-"""CLI entry point for fikrah-metrics."""
+"""CLI entry point for fikrah-metrics — interactive, beautiful, one command."""
 from __future__ import annotations
 
 import json
@@ -7,45 +7,63 @@ import sys
 
 import click
 from rich.console import Console
+from rich.prompt import Prompt
+from rich.theme import Theme
 
-from fikrah_metrics.display import THEME
+THEME = Theme({
+    "fikrah.brand": "bold #D1E95C",
+    "fikrah.accent": "#D1E95C",
+    "fikrah.dim": "#6b7c6e",
+    "fikrah.green": "#22C55E",
+    "fikrah.red": "#EF4444",
+    "fikrah.sage": "#E8F0ED",
+    "fikrah.error": "bold red",
+    "fikrah.success": "bold #D1E95C",
+})
+
+BANNER = """\
+[#D1E95C]     ◇[/]
+[#c8e64a]    ◇◆◇[/]
+[#b0e14d]     ◇       ███████╗██╗██╗  ██╗██████╗  █████╗ ██╗  ██╗[/]
+[#99dd50]    ╱ ╲      ██╔════╝██║██║ ██╔╝██╔══██╗██╔══██╗██║  ██║[/]
+[#81d853]   ╱   ╲     █████╗  ██║█████╔╝ ██████╔╝███████║███████║[/]
+[#69d356]   ╰───╯     ██╔══╝  ██║██╔═██╗ ██╔══██╗██╔══██║██╔══██║[/]
+[#52cf58]              ██║     ██║██║  ██╗██║  ██║██║  ██║██║  ██║[/]
+[#3aca5b]              ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝[/]
+[#22c55e]                                                    [dim]metrics[/dim][/]
+"""
 
 
 @click.command()
 @click.option(
     "--stripe-key", "-k",
     envvar="STRIPE_SECRET_KEY",
-    help="Stripe secret key (sk_live_* or sk_test_*). Or set STRIPE_SECRET_KEY env var.",
+    default=None,
+    help="Stripe secret key. If not provided, you'll be prompted.",
 )
 @click.option(
     "--bank-balance", "-b",
     type=float,
     default=None,
-    help="Current bank balance for runway calculation (overrides Stripe balance).",
+    help="Bank balance for runway calculation (overrides Stripe balance).",
 )
 @click.option(
     "--monthly-expenses", "-e",
     type=float,
     default=None,
-    help="Monthly expenses for burn rate (default: estimate from revenue).",
+    help="Monthly expenses for burn rate.",
 )
 @click.option(
     "--months", "-m",
     type=int,
     default=13,
-    help="Months of history to analyze (default: 13 for YoY comparison).",
+    help="Months of history (default: 13).",
 )
 @click.option(
     "--json-output", "-j",
     is_flag=True,
     default=False,
-    help="Output raw JSON instead of formatted tables.",
-)
-@click.option(
-    "--test",
-    is_flag=True,
-    default=False,
-    help="Use Stripe test mode key (sk_test_*).",
+    help="Output raw JSON.",
 )
 def main(
     stripe_key: str | None,
@@ -53,65 +71,83 @@ def main(
     monthly_expenses: float | None,
     months: int,
     json_output: bool,
-    test: bool,
 ) -> None:
-    """SaaS metrics from your Stripe account.
-
-    One command. ARR, MRR, NRR, churn, runway — everything you need
-    for your board deck, investor update, or Monday morning standup.
-
-    \b
-    Examples:
-        fikrah-metrics --stripe-key sk_live_xxx
-        fikrah-metrics -k sk_test_xxx --bank-balance 84000
-        fikrah-metrics --json-output > metrics.json
-        STRIPE_SECRET_KEY=sk_live_xxx fikrah-metrics
-    """
+    """SaaS metrics from your Stripe account. One command."""
     console = Console(theme=THEME)
 
+    # Show banner (unless JSON mode)
+    if not json_output:
+        console.print()
+        console.print(BANNER)
+        console.print()
+
+    # ── Interactive key prompt ───────────────────────────────────
     if not stripe_key:
+        stripe_key = os.environ.get("STRIPE_SECRET_KEY")
+
+    if not stripe_key:
+        if json_output:
+            print(json.dumps({"error": "STRIPE_SECRET_KEY not set"}))
+            sys.exit(1)
+
+        console.print("  [fikrah.dim]Connect your Stripe account to see your metrics.[/]")
         console.print()
-        console.print("  [bold red]Stripe key required[/]")
+        stripe_key = Prompt.ask(
+            "  [fikrah.accent]Stripe API key[/]",
+            password=True,
+            console=console,
+        )
         console.print()
-        console.print("  [dim]Pass --stripe-key or set STRIPE_SECRET_KEY:[/]")
-        console.print("    [dim]fikrah-metrics --stripe-key sk_live_xxx[/]")
-        console.print("    [dim]export STRIPE_SECRET_KEY=sk_live_xxx[/]")
-        console.print()
+
+    if not stripe_key or not stripe_key.strip():
+        console.print("  [fikrah.error]No key provided. Exiting.[/]")
         sys.exit(1)
 
-    # Validate key format
+    stripe_key = stripe_key.strip()
+
     if not stripe_key.startswith("sk_"):
-        console.print("[bold red]Invalid Stripe key format.[/] Must start with sk_live_ or sk_test_")
+        console.print("  [fikrah.error]Invalid key format.[/] Must start with [bold]sk_live_[/] or [bold]sk_test_[/]")
         sys.exit(1)
 
-    if test and not stripe_key.startswith("sk_test_"):
-        console.print("[bold red]--test flag requires a test key (sk_test_*)[/]")
-        sys.exit(1)
+    # ── Interactive bank balance prompt ──────────────────────────
+    if bank_balance is None and not json_output:
+        bal_input = Prompt.ask(
+            "  [fikrah.accent]Bank balance[/] [fikrah.dim](for runway calc, or press Enter to skip)[/]",
+            default="",
+            console=console,
+        )
+        if bal_input.strip():
+            try:
+                bank_balance = float(bal_input.strip().replace(",", "").replace("$", "").replace("€", ""))
+            except ValueError:
+                console.print("  [fikrah.dim]Couldn't parse that — using Stripe balance instead.[/]")
+        console.print()
 
-    # Fetch data
-    console.print()
-    with console.status("[dim]Fetching data from Stripe...[/]", spinner="dots"):
+    # ── Fetch ────────────────────────────────────────────────────
+    if not json_output:
+        console.print("  [fikrah.dim]Connecting to Stripe...[/]")
+        console.print()
+
+    with console.status("[fikrah.dim]  Fetching subscriptions, invoices, and customers...[/]", spinner="dots") if not json_output else _noop_context():
         try:
             from fikrah_metrics.stripe_client import fetch_stripe_data
             data = fetch_stripe_data(stripe_key, months=months)
         except Exception as e:
-            console.print(f"[bold red]Stripe API error:[/] {e}")
+            if json_output:
+                print(json.dumps({"error": str(e)}))
+            else:
+                console.print(f"  [fikrah.error]Stripe API error:[/] {e}")
             sys.exit(1)
 
-    # Compute metrics
-    with console.status("[dim]Computing metrics...[/]", spinner="dots"):
+    # ── Compute ──────────────────────────────────────────────────
+    with console.status("[fikrah.dim]  Computing metrics...[/]", spinner="dots") if not json_output else _noop_context():
         from fikrah_metrics.metrics import compute_metrics
-        metrics = compute_metrics(
-            data,
-            bank_balance=bank_balance,
-            monthly_expenses=monthly_expenses,
-        )
+        metrics = compute_metrics(data, bank_balance=bank_balance, monthly_expenses=monthly_expenses)
 
-    # Output
+    # ── Output ───────────────────────────────────────────────────
     if json_output:
         from dataclasses import asdict
         output = asdict(metrics)
-        # Remove snapshots for cleaner JSON (optional)
         output["monthly_snapshots"] = [
             {"month": s["month"], "mrr": s["mrr"], "active_customers": s["active_customers"]}
             for s in output["monthly_snapshots"]
@@ -120,6 +156,12 @@ def main(
     else:
         from fikrah_metrics.display import display_metrics
         display_metrics(metrics, console=console)
+
+
+class _noop_context:
+    """No-op context manager for JSON mode (no spinners)."""
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
 
 
 if __name__ == "__main__":
